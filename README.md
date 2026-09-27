@@ -42,13 +42,17 @@ GitHub Pages 只能放網頁，AI 模型仍在你自己的電腦上執行：先�
 3. 雙擊 `start.bat`，瀏覽器會自動打開 <http://localhost:7860>
 
 ### macOS（Apple Silicon，例如 Mac mini）/ Linux
+1. 安裝 [Ollama](https://ollama.com/download)（打開一次讓它在背景執行）
+2. 需要 Python 3.10 以上：`brew install python@3.12`（macOS 內建的 3.9 太舊）
+3. 在「終端機」執行：
 ```bash
 git clone https://github.com/supercoder592/websites-.git nova
 cd nova
-chmod +x setup.sh start.sh
+chmod +x setup.sh start.sh start.command
 ./setup.sh
 ./start.sh
 ```
+之後只要在 Finder 雙擊 `start.command` 就能啟動（第一次若被擋，按右鍵 →「打開」）。
 Mac 會自動使用 Apple Silicon GPU（MPS），NVIDIA 顯卡會自動使用 CUDA，速度比純 CPU 快非常多。
 
 各生成模型會在 **第一次使用時自動下載** 到 `models/`（全部約 13GB），之後可完全離線使用。
