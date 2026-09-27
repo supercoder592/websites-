@@ -7,3 +7,4 @@ __pycache__/
 *.log
 .lastjob
 static/_*.html
+logs/

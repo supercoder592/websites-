@@ -2,3 +2,4 @@
 *.bat text eol=crlf
 *.woff2 binary
 *.command text eol=lf
+install-autostart.sh text eol=lf

@@ -55,6 +55,12 @@ chmod +x setup.sh start.sh start.command
 之後只要在 Finder 雙擊 `start.command` 就能啟動（第一次若被擋，按右鍵 →「打開」）。
 Mac 會自動使用 Apple Silicon GPU（MPS），NVIDIA 顯卡會自動使用 CUDA，速度比純 CPU 快非常多。
 
+### 開機自動啟動（電腦開著，核心就開著）
+- **Windows**：雙擊 `install-autostart.bat`。之後只要登入 Windows，核心就會在背景自動運作，不會跳出視窗，當掉也會自動重啟。取消：`uninstall-autostart.bat`。
+- **macOS / Linux**：執行 `./install-autostart.sh`（取消：`./install-autostart.sh --uninstall`）。
+  Mac mini 當 AI 伺服器建議再開「自動登入」並關閉「自動睡眠」。
+- 紀錄檔在 `logs/`。電腦睡眠時核心也會暫停，喚醒後自動恢復。
+
 各生成模型會在 **第一次使用時自動下載** 到 `models/`（全部約 13GB），之後可完全離線使用。
 
 ## 不需要訓練
