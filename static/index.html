@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>N.O.V.A. — Neural Omni Virtual Assistant</title>
+<link rel="stylesheet" href="/static/style.css">
+<script type="importmap">
+{ "imports": {
+    "three": "/static/vendor/three.module.js",
+    "three/addons/": "/static/vendor/addons/"
+} }
+</script>
+</head>
+<body>
+<canvas id="core"></canvas>
+<div class="scanlines"></div>
+<div class="vignette"></div>
+
+<!-- 開機畫面 -->
+<div id="boot">
+  <div class="boot-inner">
+    <div class="boot-logo">N.O.V.A.</div>
+    <div class="boot-sub">NEURAL OMNI VIRTUAL ASSISTANT</div>
+    <pre id="boot-log"></pre>
+    <div class="boot-bar"><i></i></div>
+  </div>
+</div>
+
+<div id="hud">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark"><span></span></div>
+      <div class="brand-text">
+        <div class="brand-name">N.O.V.A.</div>
+        <div class="brand-tag">LOCAL NEURAL CORE · NO API · NO LIMITS</div>
+      </div>
+    </div>
+    <!-- 狀態遙測：空間不夠時依序收合，永遠不會把右側控制鈕擠出畫面 -->
+    <div class="telemetry">
+      <div class="chip" id="chip-core" title="語言核心狀態"><i class="led"></i><span>CORE</span><b id="core-state">BOOT</b></div>
+      <div class="chip meter" title="CPU 使用率"><span>CPU</span><div class="bar"><i id="cpu-bar"></i></div><b id="cpu-val">--</b></div>
+      <div class="chip meter" title="記憶體使用率"><span>RAM</span><div class="bar"><i id="ram-bar"></i></div><b id="ram-val">--</b></div>
+      <div class="chip" id="chip-engine" title="生成引擎"><span>ENGINE</span><b id="engine-val">IDLE</b></div>
+    </div>
+    <nav class="controls">
+      <label class="chip select" title="語言模型"><span>LLM</span><select id="model-select" aria-label="語言模型"><option>偵測中…</option></select></label>
+      <button class="chip btn" id="archive-btn" title="作品庫 ARCHIVE" aria-label="作品庫"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="5"/><path d="M5 9v11h14V9M10 13h4"/></svg><span>ARCHIVE</span><b>作品庫</b></button>
+      <button class="chip btn" id="settings-btn" title="生成參數設定 CONFIG" aria-label="生成參數設定" aria-controls="settings" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg><span>CONFIG</span></button>
+      <button class="chip btn" id="voice-toggle" title="語音回覆 VOICE" aria-label="語音回覆" aria-pressed="false"><svg viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 8.5a5 5 0 010 7M19 6a8.5 8.5 0 010 12"/></svg><span>VOICE</span><b>OFF</b></button>
+    </nav>
+    <div class="clock"><b id="clock-time">--:--:--</b><span id="clock-date"></span></div>
+  </header>
+
+  <div class="core-caption" id="core-caption">
+    <div class="caption-line" id="caption-text">正在初始化神經網絡…</div>
+    <div class="caption-sub" id="caption-sub">ALL SYSTEMS NOMINAL</div>
+  </div>
+
+  <section id="panel">
+    <div class="panel-head">
+      <div class="panel-title"><span>COMMS</span><b>通訊頻道</b></div>
+      <div class="panel-actions">
+        <button class="ghost" id="clear-btn" title="清除對話與記憶">NEW CHAT</button>
+        <button class="ghost" id="collapse-btn" title="收合面板（Esc）">⟩⟩</button>
+      </div>
+    </div>
+    <div id="feed"></div>
+  </section>
+
+  <!-- 生成參數 -->
+  <section id="settings" class="popover" role="dialog" aria-labelledby="settings-title">
+    <div class="popover-head"><span id="settings-title">SYNTHESIS CONFIG · 生成參數</span><button class="ghost" id="settings-close" aria-label="關閉設定">✕</button></div>
+    <div id="settings-body"></div>
+  </section>
+
+  <footer class="command">
+    <div class="suggest" id="suggest"></div>
+    <div class="opts" id="opts"></div>
+    <div class="input-shell">
+      <div class="corner tl"></div><div class="corner tr"></div><div class="corner bl"></div><div class="corner br"></div>
+      <button class="icon-btn" id="attach-btn" title="附加圖片（可看圖、以圖生圖、讓圖片動起來）">
+        <svg viewBox="0 0 24 24"><path d="M21 12.5l-8.5 8.5a5.5 5.5 0 01-7.8-7.8l9.2-9.2a3.7 3.7 0 015.2 5.2l-9.2 9.2a1.8 1.8 0 01-2.6-2.6l8.5-8.5"/></svg>
+      </button>
+      <input type="file" id="file-input" accept="image/*" hidden>
+      <div class="input-main">
+        <div id="attachments"></div>
+        <textarea id="prompt" rows="1" placeholder="對 N.O.V.A. 說任何事…"></textarea>
+      </div>
+      <button class="icon-btn web" id="web-btn" title="上網查資料：自動 / 開 / 關"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/></svg><em id="web-state">AUTO</em></button>
+      <button class="icon-btn" id="mic-btn" title="語音輸入"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3"/></svg></button>
+      <button class="send" id="send-btn"><span>EXECUTE</span><svg viewBox="0 0 24 24"><path d="M4 12h14M13 6l6 6-6 6"/></svg></button>
+    </div>
+  </footer>
+</div>
+
+<!-- HTML 預覽 -->
+<div id="preview" class="modal">
+  <div class="modal-box">
+    <div class="modal-head"><span>LIVE PREVIEW</span><button class="ghost" id="preview-close">CLOSE ✕</button></div>
+    <iframe id="preview-frame" sandbox="allow-scripts allow-modals allow-forms allow-pointer-lock"></iframe>
+  </div>
+</div>
+
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>

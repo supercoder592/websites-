@@ -1,0 +1,9 @@
+﻿venv/
+models/
+.pipcache/
+outputs/
+__pycache__/
+*.pyc
+*.log
+.lastjob
+static/_*.html
