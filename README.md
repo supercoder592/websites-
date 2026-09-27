@@ -13,7 +13,7 @@
 | 「量子電腦是什麼？」「今天有什麼科技新聞？」 | 對話，需要即時資訊時自動上網並附來源 | Ollama（預設 qwen3-vl:4b） |
 | 「寫一個霓虹貪食蛇網頁遊戲」 | 寫程式，HTML / JS 可一鍵 **PREVIEW** | Ollama |
 | 「畫一張賽博龐克城市夜景」 | 生成圖片 | SD-Turbo + TAESD |
-| 「一個女孩在海邊奔跑」「把剛剛那張圖做成影片」 | 生成 **真動態影片**（文字生影片 / 圖片生影片） | AnimateDiff-Lightning |
+| 「一個女孩在海邊奔跑」「把剛剛那張圖做成影片」 | 生成 **真動態影片**（文字生影片 / 圖片生影片，第一幀鎖定成你的圖） | LTX-Video 2B（備援：AnimateDiff-Lightning） |
 | 「做一首 lofi 放鬆音樂」 | 作曲，播放時神經球跟著節奏脈動 | MusicGen-small |
 | 「做一個 3D 太空船模型」 | 生成 3D 模型（GLB）＋全息檢視器 | Shap-E |
 | 「找一些星空的圖片素材」 | 上網找圖片 / 影片素材，可存進素材庫或拿來生成 | DuckDuckGo（免金鑰） |
@@ -25,6 +25,14 @@
 - 右上角 ⚙ 可以調整生成參數；ARCHIVE 可以瀏覽所有作品。
 
 中文提示詞會先交給本機 LLM 翻成英文，再送給生成模型。
+
+## 線上介面（GitHub Pages）
+
+<https://supercoder592.github.io/websites-/>
+
+GitHub Pages 只能放網頁，AI 模型仍在你自己的電腦上執行：先在電腦上啟動 N.O.V.A.（下方的 `start.bat` / `./start.sh`），
+再打開上面的網址，介面會自動連到 `http://127.0.0.1:7860` 的本機 AI 核心。瀏覽器若詢問「存取本機網路裝置」，請按允許。
+要連到其他電腦上的核心，可以在網址後面加 `?api=http://位址:7860`。
 
 ## 安裝與啟動
 
@@ -55,11 +63,13 @@ Mac 會自動使用 Apple Silicon GPU（MPS），NVIDIA 顯卡會自動使用 CU
 |---|---|
 | 聊天 | 每秒數個字 |
 | 圖片 512×512 | 15–30 秒 |
-| 真動態影片（CPU 預設 256px、12 幀，輸出 512px） | 數分鐘到十幾分鐘 |
+| 真動態影片 LTX-Video（CPU 預設 384×256、2 秒 24fps，輸出 768×512） | 約 5–30 分鐘（視 CPU 負載；新提示詞另需 1–5 分鐘編碼） |
 | 音樂 5–10 秒 | 1–3 分鐘 |
 | 3D 模型 | 數分鐘以上 |
 
-影片預設會依硬體自動調整：CPU 用 256px / 12 幀，Mac（MPS）與 NVIDIA 顯卡用 512px / 16 幀。
+影片預設會依硬體自動調整：CPU 用「快速 / 2 秒」，Mac（MPS）與 NVIDIA 顯卡用「高畫質 / 4 秒」。
+⚙ 設定裡可以改用 AnimateDiff（較快）；LTX-Video 失敗或記憶體不足時也會自動改用它。
+LTX-Video 0.9.8 採用 LTXV Open Weights 授權（年營收 1,000 萬美元以下可免費使用）。
 
 ## 快捷鍵
 
@@ -73,7 +83,9 @@ Mac 會自動使用 Apple Silicon GPU（MPS），NVIDIA 顯卡會自動使用 CU
 |---|---|---|
 | `NOVA_MODEL` | 第一個 Ollama 模型 | 指定聊天模型，例如 `qwen2.5:14b` |
 | `NOVA_IMAGE_MODEL` | `stabilityai/sd-turbo` | 換成其他 diffusers 圖片模型 |
-| `NOVA_VIDEO_BASE` | `emilianJR/epiCRealism` | 影片用的 SD1.5 底模（可換動漫風格模型） |
+| `NOVA_VIDEO_ENGINE` | `ltx` | 影片引擎：`ltx` 或 `animatediff` |
+| `NOVA_VIDEO_BASE` | `emilianJR/epiCRealism` | AnimateDiff 用的 SD1.5 底模（可換動漫風格模型） |
+| `NOVA_WEB_ORIGINS` | `https://supercoder592.github.io` | 允許連到本機核心的網頁來源（GitHub Pages） |
 | `NOVA_THREADS` | 8 | CPU 執行緒數 |
 | `NOVA_FAST_VAE` | CPU 上為 1 | 設為 0 改用原始 VAE（較慢、畫質稍好） |
 | `NOVA_HOST` | `127.0.0.1` | 設為 `0.0.0.0` 讓同網路的手機 / 電腦連線 |

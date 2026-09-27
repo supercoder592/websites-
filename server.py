@@ -799,7 +799,8 @@ app.mount("/static", StaticFiles(directory=os.path.join(BASE, "static")), name="
 
 @app.get("/")
 async def index():
-    return FileResponse(os.path.join(BASE, "static", "index.html"))
+    # index.html 放在專案根目錄：同一個檔案也直接當 GitHub Pages 的首頁
+    return FileResponse(os.path.join(BASE, "index.html"))
 
 
 if __name__ == "__main__":

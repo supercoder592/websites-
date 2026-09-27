@@ -7,7 +7,17 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const now = () => new Date().toLocaleTimeString('zh-TW', { hour12: false });
-const post = (url, body, opts = {}) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), ...opts });
+
+// AI 核心的位址：由本機伺服器開的頁面就是同一個網址；放在 GitHub Pages 上時，連回這台電腦的本機核心。
+// 也可以用 ?api=http://網址:7860 指定（會記住）。
+const REMOTE_UI = location.protocol === 'file:' || /\.github\.io$/i.test(location.hostname);
+const API = (() => {
+  const q = new URLSearchParams(location.search).get('api');
+  if (q) localStorage.setItem('nova-api', q.replace(/\/+$/, ''));
+  return REMOTE_UI ? (localStorage.getItem('nova-api') || 'http://127.0.0.1:7860') : '';
+})();
+const u = p => (typeof p === 'string' && p.startsWith('/') && !p.startsWith('//') ? API + p : p);
+const post = (url, body, opts = {}) => fetch(u(url), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), ...opts });
 
 const core = new NeuralCore($('#core'));
 
@@ -60,10 +70,11 @@ const SETTINGS = {
     { key: 'strength', label: '參考圖改動幅度', value: '0.55', choices: [['0.35', '低'], ['0.55', '中'], ['0.75', '高'], ['0.9', '極高']] },
     { key: 'web_ref', label: '先上網找參考素材', value: false, toggle: true },
   ],
-  // 真動態影片：auto 由後端依硬體（CPU / GPU）決定；8 幀約 1 秒
+  // 真動態影片：auto 由後端依硬體決定（CPU：快速 / 2 秒；Mac、NVIDIA：高畫質 / 4 秒）
   video: [
-    { key: 'size', label: '解析度', value: 'auto', choices: [['auto', 'auto（依硬體自動）'], ['256', '256 · 快速'], ['384', '384'], ['512', '512 · 高畫質']] },
-    { key: 'frames', label: '幀數', value: 'auto', choices: [['auto', 'auto（依硬體自動）'], ['8', '8 · 約 1 秒'], ['12', '12 · 約 1.5 秒'], ['16', '16 · 約 2 秒'], ['24', '24 · 約 3 秒']] },
+    { key: 'engine', label: '引擎', value: 'auto', choices: [['auto', 'auto（LTX-Video）'], ['ltx', 'LTX-Video · 高品質'], ['animatediff', 'AnimateDiff · 較快']] },
+    { key: 'quality', label: '畫質', value: 'auto', choices: [['auto', 'auto（依硬體自動）'], ['fast', '快速'], ['standard', '標準'], ['high', '高畫質']] },
+    { key: 'length', label: '長度', value: 'auto', choices: [['auto', 'auto（依硬體自動）'], ['2s', '約 2 秒'], ['4s', '約 4 秒']] },
     { key: 'web_ref', label: '先上網找參考素材', value: false, toggle: true },
   ],
   music: [
@@ -103,10 +114,9 @@ localStorage.setItem('nova-cfg', JSON.stringify(state.cfg));
 function genOpts() {
   const c = state.cfg;
   const [w, h] = c.image.size.split('x').map(Number);
-  const autoNum = v => v === 'auto' ? 'auto' : +v;   // 'auto' 原樣送出，其餘轉成數字
   return {
     image: { width: w, height: h, steps: +c.image.steps, strength: +c.image.strength, web_ref: !!c.image.web_ref },
-    video: { frames: autoNum(c.video.frames), size: autoNum(c.video.size), web_ref: !!c.video.web_ref },
+    video: { engine: c.video.engine, quality: c.video.quality, length: c.video.length, web_ref: !!c.video.web_ref },
     music: { duration: +c.music.duration },
     model3d: { steps: +c.model3d.steps },
   };
@@ -130,7 +140,7 @@ function renderChips() {
   if (state.reference) {
     const el = document.createElement('div');
     el.className = 'opt ref';
-    el.innerHTML = `<img src="${esc(state.reference.thumb || state.reference.url)}" referrerpolicy="no-referrer">參考素材<button title="移除">✕</button>`;
+    el.innerHTML = `<img src="${esc(u(state.reference.thumb || state.reference.url))}" referrerpolicy="no-referrer">參考素材<button title="移除">✕</button>`;
     el.querySelector('button').onclick = () => { state.reference = null; renderChips(); };
     box.appendChild(el);
   }
@@ -577,7 +587,7 @@ async function pollJob(job, m, prompt, reply, ack = '') {
     await sleep(900);
     if (!box.isConnected) { state.jobs.delete(id); refreshCore(); return; }
     let res;
-    try { res = await fetch(`/api/jobs/${id}`); } catch { if (++misses > 20) break; continue; }
+    try { res = await fetch(u(`/api/jobs/${id}`)); } catch { if (++misses > 20) break; continue; }
     // 404：伺服器不認得這個任務（例如重新啟動過）→ 視為結束，不要無限輪詢
     if (res.status === 404) { job = { ...job, status: 'error', error: '任務已遺失（伺服器可能已重新啟動）' }; break; }
     try { if (!res.ok) throw new Error(res.status); job = await res.json(); misses = 0; } catch { if (++misses > 20) break; continue; }
@@ -592,7 +602,7 @@ async function pollJob(job, m, prompt, reply, ack = '') {
     if (job.reference && !shownRef) {
       shownRef = true;
       const r = job.reference;
-      q('.ref-slot').innerHTML = `<div class="ref-note">${r.url ? `<img src="${esc(r.url)}" referrerpolicy="no-referrer">` : ''}<span>參考素材：${esc(r.title || '')}${r.source ? ` · <a href="${esc(r.source)}" target="_blank" style="color:var(--c)">來源</a>` : ''}</span></div>`;
+      q('.ref-slot').innerHTML = `<div class="ref-note">${r.url ? `<img src="${esc(u(r.url))}" referrerpolicy="no-referrer">` : ''}<span>參考素材：${esc(r.title || '')}${r.source ? ` · <a href="${esc(r.source)}" target="_blank" style="color:var(--c)">來源</a>` : ''}</span></div>`;
     }
     refreshCore();
     if (JOB_END.includes(job.status)) break;
@@ -634,22 +644,25 @@ function useAsReference(url, thumb, intent) {
   toast(intent === 'video' ? '已設為影片起始畫面，描述想要的動態後送出' : '已設為參考圖，描述想要的畫面後送出');
 }
 
-function renderResult(r, slot, prompt = '') {
+function renderResult(res, slot, prompt = '') {
+  // 伺服器回傳 /outputs/… 路徑：顯示用完整網址，回傳給伺服器（參考圖）時保留原路徑
+  const r = { ...res, url: u(res.url), poster: res.poster && u(res.poster) };
   const file = r.url.split('/').pop();
   const dl = `<a href="${r.url}" download="${file}">DOWNLOAD</a>`;
   if (r.type === 'image') {
-    state.lastImage = r.url;
+    state.lastImage = res.url;
     slot.innerHTML = `<img class="media" src="${r.url}"><div class="actions">${dl}
       <button data-r="tovideo">讓它動起來</button><button data-r="ref">以此為參考再畫</button><a href="${r.url}" target="_blank">全螢幕</a></div>`;
-    slot.querySelector('[data-r=ref]').onclick = () => useAsReference(r.url, null, 'image');
+    slot.querySelector('[data-r=ref]').onclick = () => useAsReference(res.url, r.url, 'image');
     slot.querySelector('[data-r=tovideo]').onclick = () => {
-      useAsReference(r.url, null, 'video');
+      useAsReference(res.url, r.url, 'video');
       if (!$('#prompt').value) { $('#prompt').value = prompt; autosize(); }
     };
   } else if (r.type === 'video') {
     slot.innerHTML = `<video class="media" src="${r.url}" ${r.poster ? `poster="${r.poster}"` : ''} controls loop autoplay muted playsinline></video><div class="actions">${dl}</div>`;
   } else if (r.type === 'audio') {
-    slot.innerHTML = `<div class="audio-card"><canvas></canvas><audio src="${r.url}" controls></audio></div><div class="actions">${dl}</div>`;
+    // crossorigin：介面在 GitHub Pages 時，頻譜分析需要 CORS 才讀得到聲音
+    slot.innerHTML = `<div class="audio-card"><canvas></canvas><audio src="${r.url}" ${API ? 'crossorigin="anonymous"' : ''} controls></audio></div><div class="actions">${dl}</div>`;
     hookAudio(slot.querySelector('audio'), slot.querySelector('canvas'));
   } else if (r.type === 'model3d') {
     slot.innerHTML = `<canvas class="viewer3d"></canvas><div class="actions">${dl}<button data-r="wire">全息線框</button><button data-r="spin">自動旋轉</button></div>`;
@@ -842,14 +855,14 @@ async function loadGallery() {
   const m = addMsg('ai');
   m.setIntent('archive', '作品庫', 'ARCHIVE');
   let items = [];
-  try { ({ items } = await (await fetch('/api/gallery')).json()); } catch { /* 伺服器離線 */ }
+  try { ({ items } = await (await fetch(u('/api/gallery'))).json()); } catch { /* 伺服器離線 */ }
   if (!items.length) { m.text.textContent = '作品庫是空的，先在聊天室裡生成一些東西吧。'; return; }
   m.text.innerHTML = `<p>作品庫共有 ${items.length} 件作品，點一下即可在聊天室中開啟。</p>`;
   const icon = { audio: ICON.music, model3d: ICON.model3d };
   m.extra.innerHTML = `<div class="grid">${items.map((it, i) => `<div class="tile" data-i="${i}" style="cursor:pointer">
     <span class="badge">${it.type.toUpperCase()}</span>
-    ${it.type === 'image' ? `<img src="${it.url}" loading="lazy">`
-      : it.type === 'video' ? `<video src="${it.url}" ${it.poster ? `poster="${it.poster}"` : ''} muted loop preload="none" onmouseenter="this.play()" onmouseleave="this.pause()"></video>`
+    ${it.type === 'image' ? `<img src="${u(it.url)}" loading="lazy">`
+      : it.type === 'video' ? `<video src="${u(it.url)}" ${it.poster ? `poster="${u(it.poster)}"` : ''} muted loop preload="none" onmouseenter="this.play()" onmouseleave="this.pause()"></video>`
       : `<svg viewBox="0 0 24 24" style="width:40%;height:100%;margin:auto;display:block;fill:none;stroke:var(--c);stroke-width:1.2">${icon[it.type]}</svg>`}
   </div>`).join('')}</div>`;
   m.extra.querySelectorAll('.tile').forEach(t => t.onclick = () => {
@@ -970,7 +983,7 @@ addEventListener('keydown', e => {
 let coreOnline = null;
 async function pollStatus() {
   try {
-    const s = await (await fetch('/api/status')).json();
+    const s = await (await fetch(u('/api/status'))).json();
     $('#cpu-bar').style.width = s.cpu + '%'; $('#cpu-val').textContent = Math.round(s.cpu) + '%';
     $('#ram-bar').style.width = s.ram + '%'; $('#ram-val').textContent = Math.round(s.ram) + '%';
     engineName = ENGINE_NAMES[s.loaded] || 'STANDBY';
@@ -1029,7 +1042,10 @@ async function boot() {
 
   const h = new Date().getHours();
   const greet = h < 5 ? '夜深了' : h < 12 ? '早安' : h < 18 ? '午安' : '晚安';
-  if (!s) caption('無法連線到本機伺服器，請執行 start.bat。', 'SERVER OFFLINE');
+  if (!s && REMOTE_UI) {
+    caption('AI 核心未連線：請在電腦上執行 start.bat（Mac：./start.sh），再重新整理此頁。', 'CORE OFFLINE');
+    toast('瀏覽器若詢問「存取本機網路」，請按允許');
+  } else if (!s) caption('無法連線到本機伺服器，請執行 start.bat。', 'SERVER OFFLINE');
   else if (!models.length) caption(`${greet}。語言核心離線，請啟動 Ollama 並下載模型。`, 'LLM OFFLINE');
   else caption(`${greet}，所有系統運作正常。今天想創造什麼？`, 'ALL SYSTEMS NOMINAL');
 }
