@@ -403,13 +403,35 @@ async def chat_events(data, messages, context, model, web):
         q, kind = router.search_query(prompt)[:500], router.search_kind(prompt)
         what = "影片" if kind == "videos" else "圖片"
         yield emit({"type": "token", "content": f"正在網路上搜尋「{q}」的{what}素材…"})
-        try:
-            results = await asyncio.to_thread(websearch.search, q, kind, 30 if kind == "images" else 12)
-        except Exception as e:
-            if str(e).strip() != "No results found.":
-                yield emit({"type": "error", "content": f"搜尋失敗：{str(e)[:300]}"})
-                return
-            results = []  # 沒結果不是錯誤：讓前端顯示「找不到，換個關鍵字」
+        n = 30 if kind == "images" else 12
+        # 中文關鍵字常撞到同名品牌或廣告（例如「星空」→ 星空體育）：先請本機 LLM 翻成英文來搜，
+        # 英文結果太少時才補上中文結果
+        queries = [q]
+        if not q.isascii() and model:
+            en, ok = await asyncio.to_thread(to_english_prompt, q, "search", model)
+            if ok and en.lower() != q.lower():
+                queries = [en, q]
+        results, seen, errors = [], set(), []
+        for x in queries:
+            try:
+                rows = await asyncio.to_thread(websearch.search, x, kind, n)
+            except Exception as e:
+                if str(e).strip() != "No results found.":
+                    errors.append(e)
+                rows = []
+            for r in rows:
+                key = r.get("image") or r.get("url")
+                if key not in seen:
+                    seen.add(key)
+                    results.append(r)
+            if len(results) >= min(8, n):
+                break
+        if not results and errors:
+            yield emit({"type": "error", "content": f"搜尋失敗：{str(errors[0])[:300]}"})
+            return
+        results = results[:n]
+        if len(queries) > 1:
+            q = f"{q}（{queries[0]}）"
         yield emit({"type": "search", "content": {"kind": kind, "query": q, "results": results}})
         if hint:
             yield emit({"type": "token", "content": hint})
