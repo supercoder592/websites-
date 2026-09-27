@@ -101,11 +101,12 @@ async def guard(request: Request, call_next):
                 netloc = ""
             if not netloc or (netloc != host.lower() and origin.lower().rstrip("/") not in LOCAL_ORIGINS):
                 return JSONResponse({"error": "cross-origin request blocked"}, status_code=403)
-        elif request.headers.get("sec-fetch-site") == "cross-site":
+        elif not web and request.headers.get("sec-fetch-site") == "cross-site":
             return JSONResponse({"error": "cross-origin request blocked"}, status_code=403)
         size = request.headers.get("content-length", "")
         if size.isdigit() and int(size) > MAX_BODY:
-            return JSONResponse({"error": "request body too large"}, status_code=413)
+            return JSONResponse({"error": "request body too large"}, status_code=413,
+                                headers=cors_headers(origin) if web else None)
     response = await call_next(request)
     if web:
         response.headers.update(cors_headers(origin))
@@ -137,7 +138,8 @@ SYSTEM_PROMPTS = {
             "你所在的聊天室同時具備這些能力（由系統自動處理，使用者直接說出需求即可）："
             "畫圖（例：「畫一隻太空貓」）、做影片（「把剛剛那張圖做成影片」）、作曲（「做一首 lofi 音樂」）、"
             "3D 建模（「做一個 3D 太空船模型」）、上網找素材（「找一些星空的圖片素材」）、寫程式與網頁、即時上網查資料。"
-            "對話紀錄裡以「（已生成…）」開頭的訊息，代表系統已經替使用者完成的作品。",
+            "對話紀錄中以全形括號開頭、寫著已生成或已搜尋的訊息，是系統自動寫入的作品紀錄，不是你說的話；"
+            "回覆時絕對不要輸出這種紀錄標記。",
     "code": "你是 N.O.V.A. 的程式核心，一位頂尖的全端軟體工程師。給出完整、可直接執行的程式碼，"
             "並用 ```語言 標記程式碼區塊。如果使用者要網頁、小遊戲或互動效果，請輸出單一完整的 HTML 檔"
             "（CSS 與 JS 內嵌），讓它可以直接預覽。先簡短說明思路，再給程式碼，最後說明如何使用。"
@@ -291,6 +293,11 @@ def job_params(intent, prompt, data):
         params.update({k: opts[k] for k in ("width", "height", "steps", "strength", "web_ref") if k in opts})
     elif intent == "video":
         params.update({k: opts[k] for k in ("quality", "length", "engine", "web_ref") if k in opts})
+        # 舊版介面送的是 size / frames：換算成畫質與長度
+        if "quality" not in params and str(opts.get("size", "")).isdigit():
+            params["quality"] = {256: "fast", 384: "standard"}.get(int(opts["size"]), "high")
+        if "length" not in params and str(opts.get("frames", "")).isdigit():
+            params["length"] = "2s" if int(opts["frames"]) <= 16 else "4s"
     elif intent == "music":
         params.update({k: opts[k] for k in ("duration",) if k in opts})
     elif intent == "model3d":

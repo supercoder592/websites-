@@ -33,11 +33,16 @@ def _ddg(method, query, **kw):
         raise
 
 
+# 圖片搜尋常混進博弈、娛樂城廣告，直接濾掉
+SPAM = re.compile(r"(体育|體育|博彩|娛樂城|娱乐城|彩票|百家樂|百家乐|casino|\bbet\b|betting|老虎機|真人視訊|^More$)", re.I)
+
+
 def search(query, kind="text", max_results=10):
     if kind == "images":
         rows = _ddg("images", query, max_results=max_results)
         return [{"title": r.get("title"), "image": r.get("image"), "thumbnail": r.get("thumbnail"),
-                 "url": r.get("url"), "source": r.get("source")} for r in rows]
+                 "url": r.get("url"), "source": r.get("source")} for r in rows if not SPAM.search(
+                    f"{r.get('title')} {r.get('source')} {r.get('url')}")]
     if kind == "videos":
         return search_videos(query, max_results)
     if kind == "news":

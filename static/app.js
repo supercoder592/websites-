@@ -10,7 +10,7 @@ const now = () => new Date().toLocaleTimeString('zh-TW', { hour12: false });
 
 // AI 核心的位址：由本機伺服器開的頁面就是同一個網址；放在 GitHub Pages 上時，連回這台電腦的本機核心。
 // 也可以用 ?api=http://網址:7860 指定（會記住）。
-const REMOTE_UI = location.protocol === 'file:' || /\.github\.io$/i.test(location.hostname);
+const REMOTE_UI = /\.github\.io$/i.test(location.hostname);
 const API = (() => {
   const q = new URLSearchParams(location.search).get('api');
   if (q) localStorage.setItem('nova-api', q.replace(/\/+$/, ''));
@@ -74,7 +74,7 @@ const SETTINGS = {
   video: [
     { key: 'engine', label: '引擎', value: 'auto', choices: [['auto', 'auto（LTX-Video）'], ['ltx', 'LTX-Video · 高品質'], ['animatediff', 'AnimateDiff · 較快']] },
     { key: 'quality', label: '畫質', value: 'auto', choices: [['auto', 'auto（依硬體自動）'], ['fast', '快速'], ['standard', '標準'], ['high', '高畫質']] },
-    { key: 'length', label: '長度', value: 'auto', choices: [['auto', 'auto（依硬體自動）'], ['2s', '約 2 秒'], ['4s', '約 4 秒']] },
+    { key: 'length', label: '長度', value: 'auto', choices: [['auto', 'auto（依硬體自動）'], ['2s', '約 2 秒'], ['4s', '約 4 秒（AnimateDiff 約 3 秒）']] },
     { key: 'web_ref', label: '先上網找參考素材', value: false, toggle: true },
   ],
   music: [
@@ -169,7 +169,7 @@ function renderSettings() {
   body.innerHTML = Object.entries(SETTINGS).map(([k, items]) => `<div class="cfg-group"><h4>${tagHTML(k)}</h4>${items.map(o => o.toggle
     ? `<label class="cfg-row"><span>${o.label}</span><input type="checkbox" data-k="${k}" data-o="${o.key}" ${state.cfg[k][o.key] ? 'checked' : ''}></label>`
     : `<label class="cfg-row"><span>${o.label}</span><select data-k="${k}" data-o="${o.key}">${o.choices.map(([v, t]) => `<option value="${v}" ${String(state.cfg[k][o.key]) === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>`).join('')}</div>`).join('')
-    + '<p class="cfg-note">這些參數會套用到聊天室裡所有的生成任務。CPU 上步數越高、解析度與幀數越高就越久；auto 會依你的硬體自動挑選。</p>';
+    + '<p class="cfg-note">這些參數會套用到聊天室裡所有的生成任務。CPU 上步數越多、畫質越高、影片越長就越久；auto 會依你的硬體自動挑選。</p>';
   body.querySelectorAll('[data-k]').forEach(el => el.onchange = () => {
     state.cfg[el.dataset.k][el.dataset.o] = el.type === 'checkbox' ? el.checked : el.value;
     localStorage.setItem('nova-cfg', JSON.stringify(state.cfg));
@@ -441,7 +441,7 @@ async function sendMessage(text, forceWeb = null) {
     const web = forceWeb ?? (state.web === 'auto' ? 'auto' : state.web === 'on');
     const res = await post('/api/chat', {
       web, force, model: $('#model-select').value, opts: genOpts(),
-      context: { last_image: state.lastImage, reference: reference?.url },
+      context: { last_image: state.lastImage, reference: reference?.url, reference_thumb: reference?.thumb },
       // 只有最後一則訊息附圖，避免每次都重送舊圖片
       messages: hist.map(h => ({ role: h.role, content: h.content, images: h === entry ? h.images : undefined })),
     }, { signal: ctrl.signal });

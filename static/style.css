@@ -319,3 +319,8 @@ body.panel-open #panel { transform: none; opacity: 1; }
   .chip.select select { max-width: 92px; }
   #voice-toggle b { display: none; }
 }
+
+/* 設定面板標題固定在頂端；窄螢幕時回覆標頭不折行 */
+.popover-head { position: sticky; top: 0; z-index: 1; background: rgba(3,12,22,.98); }
+.msg-head .intent-tag { white-space: nowrap; flex-shrink: 0; }
+.msg-head .model-tag { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
