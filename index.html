@@ -103,6 +103,33 @@
   </div>
 </div>
 
+<!-- 專案預覽：沙盒 iframe（遊戲碰不到本機 API）；手機 390×844 外框 / 筆電填滿 -->
+<div id="play" class="modal" role="dialog" aria-modal="true" aria-labelledby="play-label">
+  <div class="modal-box play-box">
+    <div class="modal-head">
+      <span id="play-label">PREVIEW <b id="play-name"></b></span>
+      <div class="play-tools">
+        <div class="seg" role="group" aria-label="預覽裝置">
+          <button type="button" data-dev="mobile" aria-pressed="false" title="手機 390×844">📱 手機</button>
+          <button type="button" data-dev="desktop" aria-pressed="true" title="筆電：填滿視窗">💻 筆電</button>
+        </div>
+        <button class="ghost" id="play-reload" title="重新開始遊戲">RELOAD ⟳</button>
+        <button class="ghost" id="play-close">CLOSE ✕</button>
+      </div>
+    </div>
+    <div class="play-err" id="play-err" role="alert" hidden>
+      <b>⚠ 遊戲發生錯誤</b><code id="play-err-msg"></code>
+      <button type="button" id="play-fix">讓 N.O.V.A. 修正</button>
+      <button type="button" class="ghost" id="play-err-close" aria-label="隱藏錯誤訊息">✕</button>
+    </div>
+    <div class="play-stage" id="play-stage" data-dev="desktop">
+      <div class="play-device" id="play-device">
+        <iframe id="play-frame" title="專案預覽" sandbox="allow-scripts allow-pointer-lock allow-popups allow-modals allow-forms" allow="fullscreen; autoplay; gamepad" allowfullscreen></iframe>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>if (location.protocol === 'file:') document.getElementById('boot-log').textContent = '請執行 start.bat（Mac：./start.sh）後開啟 http://127.0.0.1:7860，或使用 GitHub Pages 版介面。';</script>
 <script type="module" src="static/app.js"></script>
 </body>

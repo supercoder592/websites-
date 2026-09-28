@@ -27,6 +27,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+import project
 import router
 import websearch
 
@@ -51,19 +52,63 @@ app = FastAPI(title="N.O.V.A.")
 async def no_cache_static(request: Request, call_next):
     # 前端檔案更新後瀏覽器要立刻拿到新版
     response = await call_next(request)
-    if request.url.path == "/" or request.url.path.startswith("/static/"):
+    path = request.url.path
+    if path == "/" or path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-cache"
+    elif path.startswith("/outputs/"):
+        # 專案模式產生的 HTML 是 AI 寫的程式：用 CSP sandbox 讓它變成不透明來源，不能呼叫本機 API
+        ctype = response.headers.get("content-type", "").lower()
+        if path.lower().endswith((".html", ".htm")) or ctype.startswith(SCRIPTABLE):
+            response.headers["Content-Security-Policy"] = SANDBOX_CSP
+            response.headers["X-Content-Type-Options"] = "nosniff"
     return response
+
+
+SANDBOX_CSP = "sandbox allow-scripts allow-pointer-lock allow-popups allow-modals allow-forms"
+SCRIPTABLE = ("text/html", "application/xhtml", "image/svg", "text/xml", "application/xml")
+
+
+def load_key():
+    """遠端通道用的存取金鑰：NOVA_KEY 環境變數，或第一次啟動時自動產生並存在 .nova_key（不會上傳 GitHub）。"""
+    key = os.environ.get("NOVA_KEY", "").strip()
+    path = os.path.join(BASE, ".nova_key")
+    if not key and os.path.exists(path):
+        key = open(path, encoding="utf-8").read().strip()
+    if not key:
+        import secrets
+        key = secrets.token_urlsafe(18)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(key)
+    return key
+
+
+ACCESS_KEY = load_key()
+# 透過 Cloudflare 通道從外面連進來的網址：一律要金鑰
+TUNNEL_SUFFIXES = tuple(s.strip().lower() for s in
+                        os.environ.get("NOVA_TUNNEL_HOSTS", ".trycloudflare.com").split(",") if s.strip())
+
+
+def via_tunnel(request):
+    host = (request.headers.get("host") or "").split(":")[0].lower()
+    return host.endswith(TUNNEL_SUFFIXES) or "cf-connecting-ip" in request.headers
+
+
+def key_ok(request):
+    import hmac
+    given = request.headers.get("x-nova-key") or request.query_params.get("k") or ""
+    return hmac.compare_digest(given.encode(), ACCESS_KEY.encode())
 
 
 def host_allowed(host):
     """擋 DNS rebinding：攻擊者只能用自己註冊的公開網域，所以只放行 IP、localhost / 電腦名稱這類單字主機名、
-    .local，以及 NOVA_ALLOWED_HOSTS 列出的網域。"""
+    .local、Cloudflare 通道（另外要金鑰），以及 NOVA_ALLOWED_HOSTS 列出的網域。"""
     try:
         name = (urlsplit(f"//{host}").hostname or "").rstrip(".")
     except ValueError:
         return False
     if "*" in EXTRA_HOSTS or name in EXTRA_HOSTS or "." not in name or name.endswith((".local", ".localhost")):
+        return True
+    if name.endswith(TUNNEL_SUFFIXES):
         return True
     try:
         ipaddress.ip_address(name)
@@ -76,7 +121,7 @@ def cors_headers(origin):
     """GitHub Pages 上的介面連到本機：CORS + Chrome「存取本機網路」需要的標頭。"""
     return {"Access-Control-Allow-Origin": origin, "Vary": "Origin",
             "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type",
+            "Access-Control-Allow-Headers": "Content-Type, X-Nova-Key",
             "Access-Control-Allow-Private-Network": "true", "Access-Control-Max-Age": "600"}
 
 
@@ -91,6 +136,12 @@ async def guard(request: Request, call_next):
     web = origin is not None and origin.lower().rstrip("/") in WEB_ORIGINS
     if web and request.method == "OPTIONS":
         return JSONResponse(None, status_code=204, headers=cors_headers(origin))
+    # 從通道進來：介面頁面本身可以看，API 與作品檔案要金鑰
+    path = request.url.path
+    public = path in ("/", "/favicon.ico") or path.startswith("/static/")
+    if via_tunnel(request) and not public and not key_ok(request):
+        return JSONResponse({"error": "需要存取金鑰（網址加上 ?key=你的金鑰）"}, status_code=401,
+                            headers=cors_headers(origin) if web else None)
     if request.method not in ("GET", "HEAD", "OPTIONS"):
         # 瀏覽器的跨站 POST（包括不需要 preflight 的 text/plain）一定帶 Origin；
         # 同源或用區網 IP 連進來時 Origin 的主機就是 Host。curl / 腳本沒有 Origin，放行。
@@ -157,7 +208,8 @@ WEB_HINTS = re.compile(
 # ---------------------------------------------------------------- ollama
 async def ollama_models():
     try:
-        async with httpx.AsyncClient(timeout=3) as c:
+        # 電腦滿載時 Ollama 回應會變慢：等久一點，免得被誤判成離線
+        async with httpx.AsyncClient(timeout=10) as c:
             r = await c.get(f"{OLLAMA}/api/tags")
             return [m["name"] for m in r.json().get("models", [])]
     except Exception:
@@ -273,14 +325,42 @@ ACK = {
     "video": "收到，正在**合成影片**，需要一兩分鐘，請稍候。",
     "music": "收到，正在**作曲**。CPU 作曲需要一點時間，完成後可以直接播放。",
     "model3d": "收到，正在**建構 3D 模型**，完成後可以直接旋轉檢視。",
+    "project": "收到，開始執行**專案**：規劃 → 生成素材 → 寫遊戲程式 → 打包成 HTML。"
+               "步驟會即時顯示在這裡，CPU 上大約需要 10–30 分鐘。",
 }
-COSTLY = ("video", "music", "model3d")  # CPU 上要跑好幾分鐘的生成
-CMD = {"image": "/畫", "video": "/影片", "music": "/音樂", "model3d": "/3d", "search": "/找"}
+ACK_FIX = "收到，開始**修正專案**：讀取原專案 → 修改遊戲程式 → 檢查 → 重新打包成 HTML。CPU 上大約需要 5–20 分鐘。"
+COSTLY = ("video", "music", "model3d", "project")  # CPU 上要跑好幾分鐘的生成
+CMD = {"image": "/畫", "video": "/影片", "music": "/音樂", "model3d": "/3d", "search": "/找", "project": "/專案"}
 ASK = {  # 只打了指令沒寫內容時的回覆
     "image": ("要畫什麼呢？", "一隻太空貓"), "video": ("要做什麼樣的影片呢？", "海浪拍打礁石"),
     "music": ("要做什麼樣的音樂呢？", "輕快的 lofi 鋼琴"), "model3d": ("要建什麼 3D 模型呢？", "一艘太空船"),
     "search": ("要找什麼素材呢？", "星空 圖片"),
+    "project": ("要做什麼專案呢？", "太空射擊小遊戲，先畫一張星空背景圖，再寫遊戲程式，匯出 html，要有手機跟筆電模式"),
 }
+LABEL = {"project": "專案", **router.LABELS}  # router 還沒有 project 時也能顯示
+
+
+def project_params(data, text="", model=None):
+    """專案任務參數。有 fix_of 就是修正既有專案（id 只能是 [0-9a-z-]，且 outputs/ 裡要有那個專案）。
+    回傳 (params, 錯誤訊息)。"""
+    data = data if isinstance(data, dict) else {}
+    llm = model or (data.get("llm") if isinstance(data.get("llm"), str) else data.get("model"))
+    llm = llm if isinstance(llm, str) else None
+    if data.get("fix_of") is not None:
+        if not project.valid_id(data.get("fix_of")):
+            return None, "找不到要修正的專案（專案編號不正確或檔案已被刪除），請重新建立專案。"
+        fb = data.get("feedback")
+        feedback = (fb if isinstance(fb, str) and fb.strip() else text).strip()[:2000]
+        error = project.clean_error(data.get("error"))
+        if not feedback and not error:
+            return None, "要怎麼修改這個專案呢？請描述想調整的地方，或附上遊戲的錯誤訊息。"
+        return {"fix_of": data["fix_of"], "feedback": feedback, "error": error,
+                "prompt": feedback or "修正遊戲錯誤", "llm": llm}, None
+    prompt = str(text or data.get("prompt") or "").strip()[:4000]
+    if not prompt:
+        return None, None
+    opts = data.get("opts")
+    return {"prompt": prompt, "opts": opts if isinstance(opts, dict) else {}, "llm": llm}, None
 
 
 def job_params(intent, prompt, data):
@@ -345,7 +425,7 @@ async def chat_events(data, messages, context, model, web):
 
     cmd, rest = router.parse_command(route_text)
     forced, vetoed = data.get("force"), None
-    if isinstance(forced, str) and forced in router.INTENTS:
+    if isinstance(forced, str) and (forced in router.INTENTS or forced == "project"):
         intent, prompt = forced, (rest if cmd else route_text)
     elif cmd:
         intent, prompt = cmd, rest  # 指令後面沒寫東西就是空字串，不能把「/畫」本身當提示詞
@@ -354,9 +434,36 @@ async def chat_events(data, messages, context, model, web):
         if not sure and model:
             yield emit({"type": "status", "content": "判斷指令中…"})
             intent, vetoed = await arbitrate(route_text, intent, model, bool(attachments), bool(last_image))
-    yield emit({"type": "intent", "content": intent, "label": router.LABELS[intent]})
-    hint = (f"\n\n（如果你其實是想生成{router.LABELS[vetoed]}，可以輸入「{CMD[vetoed]} …」或用上方的意圖按鈕指定。）"
-            if vetoed else "")
+    yield emit({"type": "intent", "content": intent, "label": LABEL.get(intent, intent)})
+    hint = (f"\n\n（如果你其實是想{'建立' if vetoed == 'project' else '生成'}{LABEL.get(vetoed, vetoed)}，"
+            f"可以輸入「{CMD.get(vetoed, '/' + vetoed)} …」或用上方的意圖按鈕指定。）" if vetoed else "")
+
+    # ---------------- 專案：規劃 → 生成素材 → 寫遊戲程式 → 打包 HTML（整個流程是一個背景任務）
+    if intent == "project":
+        opts = data.get("opts") if isinstance(data.get("opts"), dict) else {}
+        fix = opts.get("project") if isinstance(opts.get("project"), dict) else {}
+        text = prompt.strip()
+        if fix.get("fix_of") is not None:
+            params, err = project_params(fix, text, model)
+        else:
+            params, err = project_params({"opts": opts}, text, model)
+        if err or not params:
+            if err and fix.get("fix_of") is not None and "找不到" in err:
+                yield emit({"type": "error", "content": err})
+                return
+            q, example = ASK["project"]
+            yield emit({"type": "token", "content": err or f"{q}請在指令後面描述內容，例如「{CMD['project']} {example}」。"})
+            yield emit({"type": "done"})
+            return
+        try:
+            job = enqueue_job("project", params)
+        except QueueFull as e:
+            yield emit({"type": "error", "content": f"目前已有 {e} 個生成任務在排隊，請等前面的完成或取消後再試。"})
+            return
+        yield emit({"type": "token", "content": (ACK_FIX if params.get("fix_of") else ACK["project"]) + hint})
+        yield emit({"type": "job", "content": job})
+        yield emit({"type": "done"})
+        return
 
     # ---------------- 只打指令沒寫內容：先問清楚，不要拿空白提示詞跑好幾分鐘
     if intent in ACK or intent == "search":
@@ -622,6 +729,8 @@ def load_reference(u):
 
 
 def run_job(job, params):
+    if job["kind"] == "project":  # 專案：自己排程規劃 / 素材 / 程式 / 打包，素材要生成時才載入引擎
+        return project.run(job, params, load_engines, to_english_prompt)
     job["message"] = "理解指令中…" if ENGINE["state"] == "ready" else "載入生成引擎…"
     engines = load_engines()
     check_cancel(job)
@@ -728,10 +837,15 @@ if os.environ.get("NOVA_PRELOAD") == "1":
 
 @app.post("/api/jobs/{kind}")
 async def create_job(kind: str, req: Request):
-    if kind not in ("image", "video", "music", "model3d"):
+    if kind not in ("image", "video", "music", "model3d", "project"):
         raise HTTPException(404)
     params = await json_body(req)
-    if not str(params.get("prompt") or "").strip():
+    if kind == "project":
+        # {prompt} 建立新專案；{fix_of, feedback, error} 修正既有專案
+        params, err = project_params(params)
+        if not params:
+            raise HTTPException(404 if err and "找不到" in err else 400, err or "empty prompt")
+    elif not str(params.get("prompt") or "").strip():
         raise HTTPException(400, "empty prompt")
     try:
         return enqueue_job(kind, params)
@@ -750,6 +864,8 @@ def enqueue_job(kind, params):
                "message": f"排隊中（前面還有 {len(active)} 個任務）" if active else "準備中…",
                "result": None, "error": None, "warning": None, "prompt": params.get("prompt"), "prompt_en": None,
                "reference": None, "cancel": False, "created": time.time(), "finished": None}
+        if kind == "project":
+            job["steps"] = []  # 專案的即時步驟清單（工作執行緒每次整個換掉）
         JOBS[job["id"]] = job
         # 只留最近 KEEP_JOBS 個已結束的任務，伺服器開再久也不會一直長大
         ended = sorted((j for j in JOBS.values() if j["status"] in FINAL), key=lambda j: j["created"])
@@ -806,6 +922,24 @@ async def status():
     }
 
 
+def thumb_for(out, name, size=256):
+    """作品庫用的小縮圖（outputs/thumbs/*.jpg，約原圖的 1/20），透過通道或手機瀏覽快很多。"""
+    tdir = os.path.join(out, "thumbs")
+    tname = os.path.splitext(name)[0] + ".jpg"
+    tpath = os.path.join(tdir, tname)
+    if not os.path.exists(tpath):
+        try:
+            from PIL import Image
+            os.makedirs(tdir, exist_ok=True)
+            with Image.open(os.path.join(out, name)) as im:
+                im = im.convert("RGB")
+                im.thumbnail((size, size))
+                im.save(tpath, quality=80)
+        except Exception:
+            return f"/outputs/{name}"
+    return f"/outputs/thumbs/{tname}"
+
+
 @app.get("/api/gallery")
 async def gallery():
     out = os.path.join(BASE, "outputs")
@@ -813,8 +947,26 @@ async def gallery():
     items = []
     for name in sorted(os.listdir(out), reverse=True):
         ext = os.path.splitext(name)[1].lower()
+        stem = name[:-len(ext)] if ext else name
+        # 專案模式做出來的遊戲（HTML + 同名 .project.json）
+        if ext == ".html" and os.path.exists(os.path.join(out, stem + ".project.json")):
+            try:
+                with open(os.path.join(out, stem + ".project.json"), encoding="utf-8") as f:
+                    meta = json.load(f)
+            except (OSError, ValueError):
+                meta = {}
+            plan = meta.get("plan") or {}
+            items.append({"type": "project", "url": f"/outputs/{name}", "project_id": stem,
+                          "title": plan.get("title") or meta.get("title") or "專案",
+                          "summary": plan.get("summary") or "",
+                          "assets": [{k: a.get(k) for k in ("name", "type", "url", "purpose")}
+                                     for a in meta.get("assets") or [] if isinstance(a, dict)],
+                          "code_path": meta.get("code_path") or "llm", "warnings": []})
+            continue
         if ext in kinds and not name.endswith(".poster.jpg"):
             item = {"type": kinds[ext], "url": f"/outputs/{name}"}
+            if ext == ".png":
+                item["thumb"] = thumb_for(out, name)
             poster = name[:-4] + ".poster.jpg"
             if ext == ".mp4" and os.path.exists(os.path.join(out, poster)):
                 item["poster"] = f"/outputs/{poster}"

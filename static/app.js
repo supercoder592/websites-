@@ -8,15 +8,47 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const now = () => new Date().toLocaleTimeString('zh-TW', { hour12: false });
 
-// AI 核心的位址：由本機伺服器開的頁面就是同一個網址；放在 GitHub Pages 上時，連回這台電腦的本機核心。
-// 也可以用 ?api=http://網址:7860 指定（會記住）。
+// AI 核心的位址：由本機伺服器開的頁面就是同一個網址；放在 GitHub Pages 上時，先連這台電腦的本機核心，
+// 連不到（例如在 iPad / 手機上）就改走電腦發布的 Cloudflare 通道。?api=網址、?key=金鑰 會記住。
 const REMOTE_UI = /\.github\.io$/i.test(location.hostname);
-const API = (() => {
-  const q = new URLSearchParams(location.search).get('api');
-  if (q) localStorage.setItem('nova-api', q.replace(/\/+$/, ''));
-  return REMOTE_UI ? (localStorage.getItem('nova-api') || 'http://127.0.0.1:7860') : '';
-})();
-const u = p => (typeof p === 'string' && p.startsWith('/') && !p.startsWith('//') ? API + p : p);
+const store = {
+  get: k => { try { return localStorage.getItem(k); } catch { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* 無痕模式 */ } },
+};
+{
+  const qs = new URLSearchParams(location.search);
+  if (qs.get('api')) store.set('nova-api', qs.get('api').replace(/\/+$/, ''));
+  if (qs.get('key')) store.set('nova-key', qs.get('key').trim());
+  if (qs.has('key')) { qs.delete('key'); history.replaceState(null, '', location.pathname + (qs.size ? '?' + qs : '')); }  // 金鑰不留在網址列
+}
+let API = REMOTE_UI ? (store.get('nova-api') || 'http://127.0.0.1:7860') : '';
+// 走通道（*.trycloudflare.com）時每個請求都要帶金鑰；img / video 沒辦法加標頭，所以放在網址參數 k
+const viaTunnel = () => /trycloudflare\.com/i.test(API || location.hostname);
+const u = p => {
+  if (typeof p !== 'string' || !p.startsWith('/') || p.startsWith('//')) return p;
+  const key = viaTunnel() && store.get('nova-key');
+  return API + p + (key ? (p.includes('?') ? '&' : '?') + 'k=' + encodeURIComponent(key) : '');
+};
+
+// GitHub Pages 連不到核心時，到 GitHub 讀電腦最新發布的通道網址（core 分支的 core.json）
+let lastDiscover = 0;
+async function discoverCore() {
+  if (!REMOTE_UI || Date.now() - lastDiscover < 20000) return false;
+  lastDiscover = Date.now();
+  const owner = location.hostname.split('.')[0];
+  const repo = location.pathname.split('/').filter(Boolean)[0];
+  if (!repo) return false;
+  try {
+    const c = await (await fetch(`https://raw.githubusercontent.com/${owner}/${repo}/core/core.json?t=${Date.now()}`, { cache: 'no-store' })).json();
+    const url = String(c.url || '').replace(/\/+$/, '');
+    if (/^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/.test(url) && url !== API) {
+      API = url;
+      store.set('nova-api', url);
+      return true;
+    }
+  } catch { /* 還沒發布過或 GitHub 連不到 */ }
+  return false;
+}
 const post = (url, body, opts = {}) => fetch(u(url), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), ...opts });
 
 const core = new NeuralCore($('#core'));
@@ -31,6 +63,7 @@ const ICON = {
   music: '<path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/>',
   model3d: '<path d="M12 2l9 5v10l-9 5-9-5V7z"/><path d="M12 22V12M21 7l-9 5-9-5"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-5-5M8 11h6M11 8v6"/>',
+  project: '<path d="M12 3l9 4.5-9 4.5-9-4.5z"/><path d="M3 12l9 4.5 9-4.5M3 16.5l9 4.5 9-4.5"/>',
   archive: '<rect x="3" y="4" width="18" height="5"/><path d="M5 9v11h14V9M10 13h4"/>',
 };
 // zh：句子裡用的名詞（「圖像已完成」）；tag：晶片、回覆標籤、設定標題共用的名稱；en：HUD 英文代號
@@ -42,6 +75,7 @@ const INTENT = {
   music:   { zh: '音樂', tag: '音樂', en: 'SONIC' },
   model3d: { zh: '3D', tag: '3D', en: 'MATTER' },
   search:  { zh: '素材', tag: '找素材', en: 'RECON' },
+  project: { zh: '專案', tag: '專案', en: 'PROJECT' },
 };
 // [意圖, 輸入框提示, 窄螢幕用的短提示（避免提示文字換行被切掉）]
 const CHIPS = [
@@ -53,6 +87,8 @@ const CHIPS = [
   ['model3d', '描述物件，例如：一把未來科幻手槍', '描述想要的物件…'],
   ['search', '要找什麼素材？例如：星空、城市夜景、海浪影片', '要找什麼素材？'],
   ['code', '描述你要的程式，例如：霓虹風格的貪食蛇網頁遊戲', '描述你要的程式…'],
+  // 專案：規劃 → 生成素材 → 寫遊戲程式 → 打包成單一 HTML（一個任務跑完全部步驟）
+  ['project', '描述要做的專案，例如：新世紀福音戰士風格的體驗遊戲，先 3D 建模，再寫遊戲程式，匯出 html，要有手機跟筆電模式', '描述要做的遊戲專案…'],
 ];
 const chipName = k => k === 'auto' ? 'AUTO' : INTENT[k].tag;
 // 回覆標籤 / 設定標題：圖示 + 中文 + 英文代號（和晶片同名）
@@ -405,19 +441,20 @@ $('#feed').addEventListener('click', e => {
 $('#preview-close').onclick = () => { $('#preview').classList.remove('open'); $('#preview-frame').srcdoc = ''; };
 
 // ------------------------------------------------------------------ 單一聊天室：送出訊息
-async function sendMessage(text, forceWeb = null) {
-  const images = state.attachments.map(a => a.data);
-  clearAttachments();
-  const force = state.force;
-  const reference = state.reference;
-  state.force = null;
-  renderChips();
+// extra：程式自動送出的訊息（例如專案修正）用 { force, project, display }，不會用掉使用者選的晶片、附圖與參考素材
+async function sendMessage(text, forceWeb = null, extra = {}) {
+  const auto = !!extra.force;
+  const images = auto ? [] : state.attachments.map(a => a.data);
+  if (!auto) clearAttachments();
+  const force = extra.force || state.force;
+  const reference = auto ? null : state.reference;
+  if (!auto) { state.force = null; renderChips(); }
 
   // 綁定送出當下的對話；途中按 NEW CHAT 的話，舊回覆不會混進新對話
   const hist = state.history;
   const entry = { role: 'user', content: text, images: images.length ? images : undefined };
   hist.push(entry);
-  userMsg(text, images);
+  userMsg(extra.display || text, images);
   const m = addMsg('ai');
   m.text.innerHTML = '<div class="status-line">連接神經核心…</div>';
 
@@ -440,7 +477,7 @@ async function sendMessage(text, forceWeb = null) {
   try {
     const web = forceWeb ?? (state.web === 'auto' ? 'auto' : state.web === 'on');
     const res = await post('/api/chat', {
-      web, force, model: $('#model-select').value, opts: genOpts(),
+      web, force, model: $('#model-select').value, opts: extra.project ? { ...genOpts(), project: extra.project } : genOpts(),
       context: { last_image: state.lastImage, reference: reference?.url, reference_thumb: reference?.thumb },
       // 只有最後一則訊息附圖，避免每次都重送舊圖片
       messages: hist.map(h => ({ role: h.role, content: h.content, images: h === entry ? h.images : undefined })),
@@ -566,10 +603,13 @@ async function pollJob(job, m, prompt, reply, ack = '') {
   const setText = head => { m.text.innerHTML = md(head + (tail ? '\n\n' + tail : '')); };
   const box = document.createElement('div');
   box.innerHTML = `<div class="job-progress indet"><div class="track"><i></i></div><div class="meta"><span class="jmsg">${esc(job.message || '準備中…')}</span><span class="jside"><b class="jpct">0%</b><button class="jcancel" title="取消這個生成任務">取消</button></span></div></div>
-    <div class="ref-slot"></div><div class="result-slot"></div><div class="en-prompt"></div>`;
+    <div class="steps-slot"></div><div class="ref-slot"></div><div class="result-slot"></div><div class="en-prompt"></div>`;
   m.extra.appendChild(box);
-  scrollFeed();
   const q = s => box.querySelector(s);
+  // 專案任務：job.steps 即時顯示成檢查清單（規劃 → 各素材 → 寫程式 → 打包）
+  const showSteps = () => { if (Array.isArray(job.steps) && job.steps.length) renderSteps(q('.steps-slot'), job.steps); };
+  showSteps();
+  scrollFeed();
   const t0 = Date.now();
   let cancelling = false;
   q('.jcancel').onclick = async () => {
@@ -599,6 +639,7 @@ async function pollJob(job, m, prompt, reply, ack = '') {
     q('.jpct').textContent = `${Math.round(p * 100)}% · ${Math.round((Date.now() - t0) / 1000)}s`;
     q('.jmsg').textContent = cancelling && job.status === 'running' ? '取消中…（等目前這一步結束）' : job.message || '';
     if (job.prompt_en && job.prompt_en !== prompt) q('.en-prompt').textContent = `PROMPT › ${job.prompt_en}`;
+    if (job.steps) { showSteps(); scrollFeed(); }
     if (job.reference && !shownRef) {
       shownRef = true;
       const r = job.reference;
@@ -631,8 +672,12 @@ async function pollJob(job, m, prompt, reply, ack = '') {
   }
   q('.job-progress').remove();
   setText(`**${zh}已完成**（${secs} 秒）` + (job.warning ? `\n\n⚠ ${job.warning}` : ''));
+  // 完成後清單收合成一行摘要（點開可以看每一步的細節）
+  q('.steps-slot details')?.removeAttribute('open');
   renderResult(job.result, q('.result-slot'), prompt);
-  reply.content = `（已生成${zh}：${job.prompt_en || prompt}）`;
+  reply.content = job.result?.type === 'project'
+    ? `（已完成專案「${job.result.title || job.result.project_id || ''}」：${job.result.url}）`
+    : `（已生成${zh}：${job.prompt_en || prompt}）`;
   core.pulse(1.2);
   caption(`${zh}已完成。`, 'SYNTHESIS COMPLETE');
   if (state.voice) speak(`${zh}已經完成。`);
@@ -645,6 +690,7 @@ function useAsReference(url, thumb, intent) {
 }
 
 function renderResult(res, slot, prompt = '') {
+  if (res.type === 'project') return renderProject(res, slot);
   // 伺服器回傳 /outputs/… 路徑：顯示用完整網址，回傳給伺服器（參考圖）時保留原路徑
   const r = { ...res, url: u(res.url), poster: res.poster && u(res.poster) };
   const file = r.url.split('/').pop();
@@ -672,6 +718,232 @@ function renderResult(res, slot, prompt = '') {
   }
   scrollFeed(true);
 }
+
+// ------------------------------------------------------------------ 專案：步驟清單、成果卡、預覽（手機 / 筆電）、修正
+const STEP_STATE = { pending: '等待', running: '進行中', done: '完成', error: '失敗', skipped: '略過' };
+const EXT_KIND = { png: 'image', jpg: 'image', jpeg: 'image', webp: 'image', gif: 'image', wav: 'audio', mp3: 'audio', ogg: 'audio', glb: 'model3d', gltf: 'model3d', mp4: 'video', html: 'project' };
+const ASSET_LABEL = { model3d: '3D', image: '圖像', audio: '音樂', video: '影片', project: '專案', file: '檔案' };
+const CODE_PATH = { llm: ['AI 撰寫', 'ai', '遊戲程式由本機 AI 撰寫並通過語法檢查'], template: ['範本', 'tpl', 'AI 寫的程式沒通過檢查，改用內建範本遊戲（已套用規劃的標題、素材與配色）'] };
+const pick = (o, k) => (typeof k === 'string' && Object.hasOwn(o, k) ? o[k] : undefined);   // 伺服器給的字串當鍵：不碰到 constructor 之類的繼承屬性
+// 只接受站內路徑（/outputs/…）或 http(s) 網址，javascript: 之類的不會變成連結、iframe 或媒體
+const okUrl = s => typeof s === 'string' && /^(\/(?![/\\])|https?:\/\/)/i.test(s);
+// 素材種類：優先用伺服器給的 type，沒有就看副檔名（步驟清單只有網址）
+const assetKind = (url, type) => type === 'music' ? 'audio' : pick(ASSET_LABEL, type) ? type : pick(EXT_KIND, String(url).split(/[?#]/)[0].split('.').pop().toLowerCase()) || 'file';
+
+function assetMedia(url, type) {
+  const full = esc(u(url));
+  switch (assetKind(url, type)) {
+    case 'image': return `<a class="as-thumb" href="${full}" target="_blank" rel="noopener" title="開啟原圖"><img src="${full}" loading="lazy" alt=""></a>`;
+    case 'audio': return `<audio src="${full}" controls preload="none"></audio>`;
+    case 'model3d': return `<button type="button" class="as-link" data-view3d="${esc(url)}">檢視 3D 模型</button>`;
+    default: return `<a class="as-link" href="${full}" target="_blank" rel="noopener">開啟檔案</a>`;
+  }
+}
+// 3D 素材：在原地展開 / 收起檢視器（被回收的檢視器會自己釋放 WebGL）
+$('#feed').addEventListener('click', e => {
+  const b = e.target.closest('[data-view3d]');
+  if (!b) return;
+  const host = b.closest('.st-body, li') || b.parentElement;   // 清單：放在說明下方；成果卡：素材列底下整列
+  let box = host.querySelector(':scope > .as-view');
+  if (!box) { box = document.createElement('div'); box.className = 'as-view'; host.appendChild(box); }
+  if (box.firstChild) { box.innerHTML = ''; b.textContent = '檢視 3D 模型'; return; }
+  const c = document.createElement('canvas');
+  c.className = 'viewer3d';
+  box.appendChild(c);
+  mountViewer(c, u(b.dataset.view3d));
+  b.textContent = '收起 3D 模型';
+});
+
+// job.steps → 檢查清單；依 id 原地更新，已經顯示的縮圖、播放中的音樂、展開的 3D 不會每次輪詢都重建
+function renderSteps(slot, steps) {
+  let ol = slot.querySelector('ol');
+  if (!ol) {
+    slot.innerHTML = `<details class="steps" open><summary><svg viewBox="0 0 24 24">${ICON.project}</svg>執行步驟<b class="steps-count"></b></summary><ol></ol></details>`;
+    ol = slot.querySelector('ol');
+  }
+  const keep = new Set();
+  let done = 0;
+  for (const s of steps) {
+    if (!s || typeof s !== 'object') continue;
+    const id = String(s.id ?? keep.size);
+    if (keep.has(id)) continue;
+    let li = [...ol.children].find(el => el.dataset.id === id);
+    if (!li) {
+      li = document.createElement('li');
+      li.dataset.id = id; li.dataset.url = '';
+      li.innerHTML = '<i class="st-icon" aria-hidden="true"></i><div class="st-body"><div class="st-line"><span class="st-label"></span><em class="st-state"></em></div><div class="st-detail"></div><div class="st-media"></div></div>';
+    }
+    if (ol.children[keep.size] !== li) ol.insertBefore(li, ol.children[keep.size] || null);
+    keep.add(id);
+    const st = pick(STEP_STATE, s.status) ? s.status : 'pending';
+    if (st === 'done' || st === 'skipped') done++;
+    li.className = `step ${st}`;
+    li.querySelector('.st-label').textContent = s.label || id;
+    li.querySelector('.st-state').textContent = STEP_STATE[st];
+    li.querySelector('.st-detail').textContent = typeof s.detail === 'string' ? s.detail : '';
+    const url = okUrl(s.url) ? s.url : '';
+    if (li.dataset.url !== url) { li.dataset.url = url; li.querySelector('.st-media').innerHTML = url ? assetMedia(url) : ''; }
+  }
+  [...ol.children].forEach(el => keep.has(el.dataset.id) || el.remove());
+  slot.querySelector('.steps-count').textContent = `${done}/${keep.size}`;
+}
+
+// 專案成果卡：標題、摘要、程式來源、素材、警告，以及 開始玩 / 預覽 / 下載 / 修正
+function renderProject(res, slot) {
+  if (!okUrl(res.url)) { slot.innerHTML = '<p class="hint">⚠ 找不到專案的 HTML 檔案網址。</p>'; return; }
+  const id = String(res.project_id || res.url.split(/[?#]/)[0].split('/').pop().replace(/\.html?$/i, ''));
+  const p = { id, url: u(res.url), title: String(res.title || id), lastError: '' };
+  const assets = Array.isArray(res.assets) ? res.assets.filter(a => a && okUrl(a.url)) : [];
+  const warns = Array.isArray(res.warnings) ? res.warnings.filter(w => typeof w === 'string' && w.trim()) : [];
+  const cp = pick(CODE_PATH, res.code_path);
+  slot.innerHTML = `<div class="project-card">
+    <div class="pc-head"><svg viewBox="0 0 24 24">${ICON.project}</svg><b class="pc-title">${esc(p.title)}</b>${cp ? `<span class="pc-badge ${cp[1]}" title="${esc(cp[2])}">${esc(cp[0])}</span>` : ''}</div>
+    ${res.summary ? `<p class="pc-summary">${esc(res.summary)}</p>` : ''}
+    ${assets.length ? `<ul class="pc-assets">${assets.map(a => {
+      const k = assetKind(a.url, a.type);
+      return `<li class="as-${esc(k)}"><span class="as-kind">${esc(ASSET_LABEL[k])}</span><div class="as-info"><b>${esc(a.name || '')}</b>${a.purpose ? `<small>${esc(a.purpose)}</small>` : ''}</div><div class="as-media">${assetMedia(a.url, a.type)}</div></li>`;
+    }).join('')}</ul>` : ''}
+    ${warns.length ? `<ul class="pc-warn">${warns.map(w => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}
+    <div class="pc-error" hidden></div>
+    <div class="actions pc-actions">
+      <a class="pc-play" href="${esc(p.url)}" target="_blank" rel="noopener">▶ 開始玩</a>
+      <button type="button" data-p="preview">預覽</button>
+      <button type="button" data-p="download">⬇ 下載 HTML</button>
+      <button type="button" data-p="fix" aria-expanded="false">🔧 修正</button>
+    </div>
+    <form class="pc-fix" hidden>
+      <textarea rows="3" maxlength="2000" placeholder="想改哪裡？例如：敵人少一點、主角移動快一點、加上跳躍、背景換成夜晚…"></textarea>
+      <label class="pc-err-opt" hidden><input type="checkbox" checked><span>附上遊戲的錯誤訊息</span></label>
+      <div class="actions"><button type="submit" class="pc-send">送出修正</button><button type="button" data-p="cancel">取消</button><span class="hint">Ctrl+Enter 送出 · 會產生新版本，舊版保留</span></div>
+    </form>
+  </div>`;
+  const card = slot.querySelector('.project-card'), form = card.querySelector('.pc-fix'), ta = form.querySelector('textarea');
+  const fixBtn = card.querySelector('[data-p=fix]'), errOpt = form.querySelector('.pc-err-opt');
+  const showFix = open => {
+    form.hidden = !open;
+    fixBtn.setAttribute('aria-expanded', String(open));
+    fixBtn.classList.toggle('on', open);
+    errOpt.hidden = !p.lastError;
+    if (open) { ta.focus(); scrollFeed(); }
+  };
+  // 預覽裡的遊戲回報錯誤時：卡片上也留一份，關掉預覽後還能一鍵修正
+  p.showError = () => {
+    const box = card.querySelector('.pc-error');
+    box.hidden = !p.lastError;
+    errOpt.hidden = !p.lastError;
+    box.innerHTML = p.lastError ? `<div class="pe-head"><b>⚠ 遊戲發生錯誤</b><button type="button">讓 N.O.V.A. 修正</button></div><pre>${esc(p.lastError)}</pre>` : '';
+    box.querySelector('button')?.addEventListener('click', () => fixProject(p, '', p.lastError));
+  };
+  card.querySelector('[data-p=preview]').onclick = () => openPlay(p);
+  card.querySelector('[data-p=download]').onclick = e => downloadProject(p, e.currentTarget);
+  fixBtn.onclick = () => showFix(form.hidden);
+  form.querySelector('[data-p=cancel]').onclick = () => showFix(false);
+  ta.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.isComposing) { e.preventDefault(); form.requestSubmit(); }
+    if (e.key === 'Escape') { e.stopPropagation(); showFix(false); fixBtn.focus(); }   // 別讓全域 Esc 收起面板
+  });
+  form.onsubmit = e => {
+    e.preventDefault();
+    const feedback = ta.value.trim();
+    const error = !errOpt.hidden && errOpt.querySelector('input').checked ? p.lastError : '';
+    if (!feedback && !error) { toast('請描述想修改的地方'); ta.focus(); return; }
+    if (fixProject(p, feedback, error)) { ta.value = ''; showFix(false); }
+  };
+  scrollFeed(true);
+}
+
+// 修正：同一個聊天室送出「專案」訊息，帶上 opts.project，後端讀回舊版 .project.json 重寫程式再打包成新版本
+function fixProject(p, feedback, error = '') {
+  if (state.streaming) { toast('N.O.V.A. 回覆中，請稍候再送出修正'); return false; }
+  const text = feedback || '請修正遊戲執行時發生的錯誤';
+  const first = error ? error.split('\n')[0].slice(0, 160) : '';
+  closePlay();
+  openPanel();
+  core.pulse(0.8);
+  sendMessage(text, null, {
+    force: 'project',
+    project: { fix_of: p.id, feedback: text, error: error || '' },
+    display: `🔧 修正「${p.title}」：${text}` + (first ? `\n（附上錯誤：${first}）` : ''),
+  });
+  return true;
+}
+
+// 下載：用 fetch 取回再存成檔案（介面在 GitHub Pages 時跨來源的 <a download> 會被忽略）
+async function downloadProject(p, btn) {
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = '下載中…';
+  try {
+    const res = await fetch(p.url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = new Blob([await res.blob()], { type: 'text/html;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${p.title.replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').trim().slice(0, 60) || p.id || 'nova-project'}.html`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    toast('已下載 HTML：直接用瀏覽器開啟就能玩，不需要網路');
+  } catch (e) { toast(`下載失敗：${e.message}`); }
+  btn.disabled = false; btn.textContent = label;
+}
+
+// 預覽視窗：沙盒 iframe；📱 手機 = 390×844 外框（縮放到放得下），💻 筆電 = 填滿視窗
+const play = { p: null, dev: 'desktop', errs: 0 };
+const playEl = $('#play'), playFrame = $('#play-frame'), playStage = $('#play-stage');
+const playOpen = () => playEl.classList.contains('open');
+function openPlay(p) {
+  play.p = p; play.errs = 0;
+  if (innerWidth <= 640) play.dev = 'mobile';
+  $('#play-name').textContent = p.title;
+  $('#play-err').hidden = true;
+  playEl.classList.add('open');
+  setDevice(play.dev, false);
+  void playFrame.offsetWidth;   // 先排版：遊戲啟動時讀到的 innerWidth/innerHeight 才是真正的畫面大小（不是 300×150）
+  // #mode= 讓遊戲一開始就用對應的操作模式（手機：虛擬搖桿）
+  playFrame.src = `${p.url}#mode=${play.dev}`;
+  $('#play-close').focus();
+}
+function closePlay() {
+  if (!playOpen()) return;
+  playEl.classList.remove('open');
+  playFrame.src = 'about:blank';   // 停掉遊戲迴圈與音樂
+  play.p = null;
+}
+function setDevice(dev, notify = true) {
+  play.dev = dev;
+  playStage.dataset.dev = dev;
+  playEl.querySelectorAll('.seg [data-dev]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.dev === dev)));
+  fitPlay();
+  if (notify) playFrame.contentWindow?.postMessage({ type: 'nova-mode', mode: dev }, '*');
+}
+function fitPlay() {
+  if (!playOpen() || play.dev !== 'mobile') return;
+  const box = $('#play-device'), fw = box.offsetWidth || 410, fh = box.offsetHeight || 864;   // 含外框
+  const k = Math.min(1, (playStage.clientWidth - 16) / fw, (playStage.clientHeight - 16) / fh);
+  box.style.setProperty('--k', Math.max(0.2, k).toFixed(4));
+}
+new ResizeObserver(fitPlay).observe(playStage);
+playEl.querySelectorAll('.seg [data-dev]').forEach(b => b.onclick = () => setDevice(b.dataset.dev));
+$('#play-reload').onclick = () => { if (play.p) { play.errs = 0; $('#play-err').hidden = true; playFrame.src = 'about:blank'; setTimeout(() => { if (play.p) playFrame.src = `${play.p.url}#mode=${play.dev}`; }, 30); } };
+$('#play-close').onclick = closePlay;
+$('#play-err-close').onclick = () => { $('#play-err').hidden = true; };
+$('#play-fix').onclick = () => play.p && fixProject(play.p, '', play.p.lastError);
+playEl.addEventListener('pointerdown', e => { if (e.target === playEl) closePlay(); });
+
+// 遊戲回報的錯誤：只接受預覽 iframe 送來的 {type:'nova-error'}
+addEventListener('message', e => {
+  const d = e.data;
+  if (!play.p || !playFrame.contentWindow || e.source !== playFrame.contentWindow) return;
+  if (!d || typeof d !== 'object' || d.type !== 'nova-error') return;
+  const msg = (typeof d.message === 'string' ? d.message : '').trim().slice(0, 500) || '未知錯誤';
+  const stack = typeof d.stack === 'string' ? d.stack.trim() : '';
+  const full = (stack.includes(msg) ? stack : msg + (stack ? '\n' + stack : '')).slice(0, 2000);
+  const p = play.p;
+  play.errs++;
+  if (p.lastError !== full) { p.lastError = full; p.showError?.(); }
+  $('#play-err-msg').textContent = msg + (play.errs > 1 ? `（共 ${play.errs} 次）` : '');
+  $('#play-err').hidden = false;
+  if (play.errs === 1) { core.setState('error'); setTimeout(refreshCore, 1500); }
+});
 
 // ------------------------------------------------------------------ 素材搜尋結果
 function renderSearch({ kind, query, results }, m) {
@@ -858,12 +1130,12 @@ async function loadGallery() {
   try { ({ items } = await (await fetch(u('/api/gallery'))).json()); } catch { /* 伺服器離線 */ }
   if (!items.length) { m.text.textContent = '作品庫是空的，先在聊天室裡生成一些東西吧。'; return; }
   m.text.innerHTML = `<p>作品庫共有 ${items.length} 件作品，點一下即可在聊天室中開啟。</p>`;
-  const icon = { audio: ICON.music, model3d: ICON.model3d };
+  const icon = { audio: ICON.music, model3d: ICON.model3d, project: ICON.project };
   m.extra.innerHTML = `<div class="grid">${items.map((it, i) => `<div class="tile" data-i="${i}" style="cursor:pointer">
     <span class="badge">${it.type.toUpperCase()}</span>
-    ${it.type === 'image' ? `<img src="${u(it.url)}" loading="lazy">`
+    ${it.type === 'image' ? `<img src="${esc(u(it.thumb || it.url))}" loading="lazy">`
       : it.type === 'video' ? `<video src="${u(it.url)}" ${it.poster ? `poster="${u(it.poster)}"` : ''} muted loop preload="none" onmouseenter="this.play()" onmouseleave="this.pause()"></video>`
-      : `<svg viewBox="0 0 24 24" style="width:40%;height:100%;margin:auto;display:block;fill:none;stroke:var(--c);stroke-width:1.2">${icon[it.type]}</svg>`}
+      : `<svg viewBox="0 0 24 24" style="width:40%;height:100%;margin:auto;display:block;fill:none;stroke:var(--c);stroke-width:1.2">${icon[it.type] || ICON.auto}</svg>`}
   </div>`).join('')}</div>`;
   m.extra.querySelectorAll('.tile').forEach(t => t.onclick = () => {
     const out = addMsg('ai');
@@ -970,9 +1242,10 @@ $('#mic-btn').onclick = () => {
 
 // keyboard shortcuts
 addEventListener('keydown', e => {
-  if (e.altKey && /^[0-7]$/.test(e.key) && CHIPS[+e.key]) { e.preventDefault(); const k = CHIPS[+e.key][0]; setForce(k === 'auto' ? null : k); }
+  if (e.altKey && /^[0-9]$/.test(e.key) && CHIPS[+e.key]) { e.preventDefault(); const k = CHIPS[+e.key][0]; setForce(k === 'auto' ? null : k); }
   if (e.key === 'Escape') {
-    if ($('#preview').classList.contains('open')) $('#preview-close').click();
+    if (playOpen()) closePlay();
+    else if ($('#preview').classList.contains('open')) $('#preview-close').click();
     else if (settingsOpen()) setSettingsOpen(false);
     else openPanel(!document.body.classList.contains('panel-open'));
   }
@@ -981,9 +1254,21 @@ addEventListener('keydown', e => {
 
 // ------------------------------------------------------------------ telemetry
 let coreOnline = null;
-async function pollStatus() {
+let keyWarned = false;
+async function pollStatus(retry = true) {
   try {
-    const s = await (await fetch(u('/api/status'))).json();
+    const r = await fetch(u('/api/status'));
+    if (r.status === 401) {
+      $('#chip-core .led').className = 'led bad';
+      $('#core-state').textContent = 'KEY REQUIRED';
+      coreOnline = false;
+      if (!keyWarned) {
+        keyWarned = true;
+        caption('需要存取金鑰：請用電腦給你的「含 ?key= 的連結」開啟一次，之後會自動記住。', 'ACCESS KEY');
+      }
+      return null;
+    }
+    const s = await r.json();
     $('#cpu-bar').style.width = s.cpu + '%'; $('#cpu-val').textContent = Math.round(s.cpu) + '%';
     $('#ram-bar').style.width = s.ram + '%'; $('#ram-val').textContent = Math.round(s.ram) + '%';
     engineName = ENGINE_NAMES[s.loaded] || 'STANDBY';
@@ -1001,6 +1286,8 @@ async function pollStatus() {
     refreshCore();
     return s;
   } catch {
+    // 在 iPad / 手機上連不到 127.0.0.1：改用電腦發布在 GitHub 的通道網址再試一次
+    if (retry && await discoverCore()) return pollStatus(false);
     $('#chip-core .led').className = 'led bad';
     $('#core-state').textContent = 'SERVER DOWN';
     coreOnline = false;

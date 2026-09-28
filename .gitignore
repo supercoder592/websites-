@@ -8,3 +8,5 @@ __pycache__/
 .lastjob
 static/_*.html
 logs/
+tools/
+.nova_key
